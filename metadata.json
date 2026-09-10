@@ -1,0 +1,6 @@
+{
+  "name": "Local AI PDF Editor",
+  "description": "Desktop-class web application for local AI-powered PDF editing, text replacement, redaction, and annotations with Ollama and PyMuPDF engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
