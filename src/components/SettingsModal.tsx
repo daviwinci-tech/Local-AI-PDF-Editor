@@ -176,7 +176,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   ))
                 ) : (
                   <>
-                    <option value="qwen2.5:latest">qwen2.5:latest (Doporučeno pro češtinu)</option>
+                    <option value="qwen3:14b:latest">qwen3:14b:latest (Nová generace, špičková čeština)</option>
+                    <option value="qwen2.5:latest">qwen2.5:latest (Osvědčený)</option>
                     <option value="llama3.1:latest">llama3.1:latest</option>
                     <option value="mistral:latest">mistral:latest</option>
                     <option value="deepseek-r1:latest">deepseek-r1:latest</option>

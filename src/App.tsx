@@ -47,7 +47,7 @@ export default function App() {
 
   const [settings, setSettings] = useState<AppSettings>({
     ollama_url: 'http://localhost:11434',
-    model: 'qwen2.5:latest',
+    model: 'qwen3:14b:latest',
     temperature: 0.2,
     auto_apply: false,
     keep_revision_history: true,

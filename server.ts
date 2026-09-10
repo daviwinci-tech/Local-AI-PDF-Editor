@@ -155,7 +155,7 @@ function tryDecryptPdf(
 
 let appSettings = {
   ollama_url: "http://localhost:11434",
-  model: "qwen2.5:latest",
+  model: "qwen3:14b:latest",
   temperature: 0.2,
   auto_apply: false,
   keep_revision_history: true,
@@ -1415,6 +1415,7 @@ app.get("/api/ollama/models", async (req, res) => {
   // Return default suggested model lineup
   res.json({
     models: [
+      { name: "qwen3:14b:latest", size: 9000000000, family: "qwen" },
       { name: "qwen2.5:latest", size: 4700000000, family: "qwen" },
       { name: "llama3.1:latest", size: 4900000000, family: "llama" },
       { name: "mistral:latest", size: 4100000000, family: "mistral" },
