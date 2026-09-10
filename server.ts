@@ -118,10 +118,14 @@ async function getDocumentFonts(pdfDoc: PDFDocument): Promise<{ regularFont: PDF
   let boldFont: PDFFont;
 
   const regPaths = [
+    path.join(process.cwd(), "public", "fonts", "LiberationSans-Regular.ttf"),
+    path.join(process.cwd(), "dist", "fonts", "LiberationSans-Regular.ttf"),
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
   ];
   const boldPaths = [
+    path.join(process.cwd(), "public", "fonts", "LiberationSans-Bold.ttf"),
+    path.join(process.cwd(), "dist", "fonts", "LiberationSans-Bold.ttf"),
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
   ];
@@ -631,29 +635,44 @@ async function applyOperationsToPdf(
           fSize = op.font_size || targetBlock.font_size || 11;
         }
 
-        // 1. Draw white redaction rectangle to erase old text
+        // Auto-fit calculation (Sprint 1 & 3):
+        // If the new text would overflow the original container width,
+        // dynamically scale down the font size down to 7pt to maintain layout fidelity.
+        let effectiveFontSize = fSize;
+        if (w > 20 && op.new_text.length > 0) {
+          const measuredWidth = safeMeasureWidth(regularFont, op.new_text, fSize);
+          if (measuredWidth > w * 1.05) {
+            const scaleFactor = (w * 0.98) / measuredWidth;
+            effectiveFontSize = Math.max(7.0, Math.round(fSize * scaleFactor * 10) / 10);
+          }
+        }
+
+        // 1. Draw white redaction rectangle covering old text
+        const oldTextMeasuredWidth = safeMeasureWidth(regularFont, op.old_text, fSize);
+        const eraseWidth = Math.max(w, oldTextMeasuredWidth);
         page.drawRectangle({
           x: Math.max(0, x - 2),
           y: Math.max(0, y - 2),
-          width: Math.min(pW - x, w + 10),
+          width: Math.min(pW - x, eraseWidth + 6),
           height: Math.min(pH - y, h + 6),
           color: rgb(1, 1, 1),
         });
 
-        // 2. Draw new text
+        // 2. Draw new text with auto-fitted font size & Unicode support
         const colorRgb = hexToRgb(op.color || (targetBlock ? targetBlock.color : "#262626"));
         safeDrawText(page, op.new_text, {
           x,
           y: y + 2,
-          size: fSize,
+          size: effectiveFontSize,
           font: regularFont,
           color: rgb(colorRgb.r, colorRgb.g, colorRgb.b),
         });
 
-        // Update block text in pageInfo
+        // Update block text & bbox in pageInfo
         if (targetBlock) {
           targetBlock.text = targetBlock.text.replace(op.old_text, op.new_text);
-          const newWidth = safeMeasureWidth(regularFont, targetBlock.text, fSize);
+          targetBlock.font_size = effectiveFontSize;
+          const newWidth = safeMeasureWidth(regularFont, targetBlock.text, effectiveFontSize);
           targetBlock.bbox[2] = targetBlock.bbox[0] + newWidth;
         }
 
@@ -676,10 +695,22 @@ async function applyOperationsToPdf(
               const y = curH - topY - h;
               const fSize = op.font_size || b.font_size || 11;
 
+              // Auto-fit calculation
+              let effectiveFontSize = fSize;
+              if (w > 20 && op.new_text.length > 0) {
+                const measuredWidth = safeMeasureWidth(regularFont, op.new_text, fSize);
+                if (measuredWidth > w * 1.05) {
+                  const scaleFactor = (w * 0.98) / measuredWidth;
+                  effectiveFontSize = Math.max(7.0, Math.round(fSize * scaleFactor * 10) / 10);
+                }
+              }
+
+              const oldTextMeasuredWidth = safeMeasureWidth(regularFont, op.old_text, fSize);
+              const eraseWidth = Math.max(w, oldTextMeasuredWidth);
               curPage.drawRectangle({
                 x: Math.max(0, x - 2),
                 y: Math.max(0, y - 2),
-                width: Math.min(curW - x, w + 10),
+                width: Math.min(curW - x, eraseWidth + 6),
                 height: Math.min(curH - y, h + 6),
                 color: rgb(1, 1, 1),
               });
@@ -688,12 +719,15 @@ async function applyOperationsToPdf(
               safeDrawText(curPage, b.text.replace(op.old_text, op.new_text), {
                 x,
                 y: y + 2,
-                size: fSize,
+                size: effectiveFontSize,
                 font: regularFont,
                 color: rgb(cRgb.r, cRgb.g, cRgb.b),
               });
 
               b.text = b.text.replace(op.old_text, op.new_text);
+              b.font_size = effectiveFontSize;
+              const newWidth = safeMeasureWidth(regularFont, b.text, effectiveFontSize);
+              b.bbox[2] = b.bbox[0] + newWidth;
               modifiedPagesSet.add(pIdx + 1);
             }
           }

@@ -19,9 +19,14 @@ import {
   Eye,
   EyeOff,
   ShieldCheck,
+  Check,
+  Trash2,
+  ShieldAlert,
+  FileEdit,
+  Type,
 } from 'lucide-react';
 import { pdfjsLib } from '../lib/pdfWorker';
-import { DocumentMetadata, PageInfo, SelectedElement, TextBlock } from '../types';
+import { DocumentMetadata, PageInfo, PDFOperation, SelectedElement, TextBlock } from '../types';
 
 interface PDFViewerProps {
   document: DocumentMetadata | null;
@@ -31,6 +36,8 @@ interface PDFViewerProps {
   onSelectElement: (element: SelectedElement | null) => void;
   pdfUrl: string | null;
   revisionCounter: number;
+  onApplyDirectOperations?: (operations: PDFOperation[]) => Promise<void>;
+  isApplying?: boolean;
 }
 
 export const PDFViewer: React.FC<PDFViewerProps> = ({
@@ -41,6 +48,8 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
   onSelectElement,
   pdfUrl,
   revisionCounter,
+  onApplyDirectOperations,
+  isApplying,
 }) => {
   const [scale, setScale] = useState<number>(1.25);
   const [fitMode, setFitMode] = useState<'custom' | 'width' | 'page'>('width');
@@ -232,6 +241,71 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
 
   const handleRotate = () => {
     setRotation((prev) => (prev + 90) % 360);
+  };
+
+  // Inline edit state and auto-fit calculation (Sprint 3)
+  const [inlineEditText, setInlineEditText] = useState<string>('');
+
+  useEffect(() => {
+    if (selectedElement) {
+      setInlineEditText(selectedElement.text);
+    } else {
+      setInlineEditText('');
+    }
+  }, [selectedElement?.id, selectedElement?.text]);
+
+  const origBoxWidth = selectedElement
+    ? selectedElement.bbox[2] - selectedElement.bbox[0]
+    : 100;
+  const origFontSize = selectedElement?.fontSize || 11;
+  const estCharWidth = origFontSize * 0.52;
+  const estTextWidth = inlineEditText.length * estCharWidth;
+  const isOverflowing = origBoxWidth > 20 && estTextWidth > origBoxWidth * 1.05;
+  const calculatedFitSize = isOverflowing
+    ? Math.max(7, Math.round((origBoxWidth / estTextWidth) * origFontSize * 10) / 10)
+    : origFontSize;
+
+  const handleSaveInlineEdit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!selectedElement || !inlineEditText.trim() || !onApplyDirectOperations || isApplying) return;
+    if (inlineEditText === selectedElement.text) {
+      onSelectElement(null);
+      return;
+    }
+    await onApplyDirectOperations([
+      {
+        type: 'replace_text',
+        page: selectedElement.page,
+        old_text: selectedElement.text,
+        new_text: inlineEditText.trim(),
+        font_size: calculatedFitSize,
+      },
+    ]);
+  };
+
+  const handleDirectRedact = async () => {
+    if (!selectedElement || !onApplyDirectOperations || isApplying) return;
+    await onApplyDirectOperations([
+      {
+        type: 'redact',
+        page: selectedElement.page,
+        old_text: selectedElement.text,
+        bbox: selectedElement.bbox,
+        color: '#000000',
+      },
+    ]);
+  };
+
+  const handleDirectDelete = async () => {
+    if (!selectedElement || !onApplyDirectOperations || isApplying) return;
+    await onApplyDirectOperations([
+      {
+        type: 'delete_text',
+        page: selectedElement.page,
+        old_text: selectedElement.text,
+        bbox: selectedElement.bbox,
+      },
+    ]);
   };
 
   if (!document) {
@@ -450,6 +524,108 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
               );
             })}
           </div>
+
+          {/* Floating Contextual Quick Edit Popover (Sprint 3: Interactivity & Auto-fit) */}
+          {selectedElement && selectedElement.page === currentPage && (
+            <div
+              className="absolute z-35 bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-xl p-3 shadow-2xl transition-all duration-150"
+              style={{
+                left: `${Math.max(8, Math.min(pageWidth - 340, selectedElement.bbox[0] * scaleX))}px`,
+                top: `${
+                  selectedElement.bbox[1] * scaleY > 150
+                    ? selectedElement.bbox[1] * scaleY - 132
+                    : selectedElement.bbox[3] * scaleY + 10
+                }px`,
+                width: '330px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800 text-[11px]">
+                <div className="flex items-center gap-1.5 text-zinc-200 font-medium">
+                  <FileEdit className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Rychlá úprava textu</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onSelectElement(null)}
+                  className="text-zinc-400 hover:text-white p-0.5 rounded hover:bg-zinc-800 transition cursor-pointer"
+                  title="Zavřít"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Form for direct text modification */}
+              <form onSubmit={handleSaveInlineEdit} className="space-y-2.5">
+                <div>
+                  <input
+                    type="text"
+                    value={inlineEditText}
+                    onChange={(e) => setInlineEditText(e.target.value)}
+                    placeholder="Zadejte nový text..."
+                    autoFocus
+                    className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-medium"
+                  />
+                </div>
+
+                {/* Auto-fit Font calculation badge */}
+                <div className="flex items-center justify-between text-[10px] px-0.5 text-zinc-400">
+                  <div className="flex items-center gap-1">
+                    <Type className="w-3 h-3 text-zinc-500" />
+                    <span>Původní: {origFontSize} pt</span>
+                  </div>
+                  {isOverflowing ? (
+                    <span className="text-amber-300 font-medium bg-amber-950/60 border border-amber-800/60 px-1.5 py-0.5 rounded">
+                      Auto-fit: {calculatedFitSize} pt
+                    </span>
+                  ) : (
+                    <span className="text-emerald-400 font-medium bg-emerald-950/50 border border-emerald-800/50 px-1.5 py-0.5 rounded">
+                      Auto-fit: {origFontSize} pt (Vejde se)
+                    </span>
+                  )}
+                </div>
+
+                {/* Primary Action Buttons */}
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <button
+                    type="submit"
+                    disabled={!inlineEditText.trim() || isApplying}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-semibold transition cursor-pointer shadow flex items-center justify-center gap-1"
+                  >
+                    {isApplying ? (
+                      <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isApplying ? 'Ukládání...' : 'Použít změnu'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDirectRedact}
+                    disabled={isApplying}
+                    className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 rounded-lg border border-zinc-700/60 transition cursor-pointer text-xs flex items-center gap-1"
+                    title="Začernit (Redact)"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span className="text-[10px]">Začernit</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDirectDelete}
+                    disabled={isApplying}
+                    className="px-2 py-1.5 bg-zinc-800 hover:bg-rose-950 text-rose-400 rounded-lg border border-zinc-700/60 transition cursor-pointer text-xs flex items-center gap-1"
+                    title="Smazat text"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span className="text-[10px]">Smazat</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
           {/* Loading state indicator */}
           {isLoadingPdf && (

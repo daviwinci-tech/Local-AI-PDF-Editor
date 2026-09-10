@@ -221,6 +221,30 @@ export default function App() {
     }
   };
 
+  // Direct Operations from PDFViewer visual inline edit / redact / delete
+  const handleApplyDirectOperations = async (operations: PDFOperation[]) => {
+    if (!docAnalysis) return;
+    const directMsgId = `direct_${Date.now()}`;
+    const op = operations[0];
+    const opDescription =
+      op?.type === 'replace_text'
+        ? `Nahrazení textu „${op.old_text}“ za „${op.new_text}“`
+        : op?.type === 'redact'
+        ? `Začernění textu „${op.old_text || 'oblasti'}“`
+        : `Smazání textu „${op.old_text || 'oblasti'}“`;
+
+    const directMsg: ChatMessage = {
+      id: directMsgId,
+      role: 'assistant',
+      content: `Vizuální úprava: ${opDescription}`,
+      timestamp: new Date().toLocaleTimeString(),
+      operations,
+      status: 'applied',
+    };
+    setChatMessages((prev) => [...prev, directMsg]);
+    await handleApplyOperations(operations, directMsgId);
+  };
+
   // Cancel Operations
   const handleCancelOperations = (messageId: string) => {
     setChatMessages((prev) =>
@@ -330,6 +354,8 @@ export default function App() {
           onSelectElement={setSelectedElement}
           pdfUrl={currentPdfUrl}
           revisionCounter={revisionCounter}
+          onApplyDirectOperations={handleApplyDirectOperations}
+          isApplying={isApplying}
         />
 
         {/* Right: AI PDF Assistant Chat */}
