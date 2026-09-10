@@ -3,6 +3,8 @@ david.windsedl.cz
 
 Kompletní plně funkční desktopově působící webová aplikace pro **lokální úpravu PDF pomocí AI (Ollama)** a robustního PDF engine (**PyMuPDF / fitz**, **pdfplumber**, **Pillow**).
 
+![Local AI PDF Editor Screenshot](./public/screenshot.jpg)
+
 ---
 
 ## 🌟 Klíčové vlastnosti (Key Features)
