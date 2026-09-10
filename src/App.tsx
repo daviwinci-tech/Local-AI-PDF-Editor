@@ -5,6 +5,7 @@ import { PDFViewer } from './components/PDFViewer';
 import { AIChat } from './components/AIChat';
 import { SettingsModal } from './components/SettingsModal';
 import { BeforeAfterDiff } from './components/BeforeAfterDiff';
+import { PasswordModal } from './components/PasswordModal';
 import { api } from './lib/api';
 import {
   DocumentMetadata,
@@ -23,6 +24,17 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [diffMode, setDiffMode] = useState<boolean>(false);
+
+  // Password-protected PDF states
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState<boolean>(false);
+  const [pendingProtectedDoc, setPendingProtectedDoc] = useState<{
+    id: string;
+    filename: string;
+    fileSizeBytes?: number;
+    file?: File;
+  } | null>(null);
+  const [passwordModalError, setPasswordModalError] = useState<string | null>(null);
+  const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
 
   const [revisionCounter, setRevisionCounter] = useState<number>(0);
   const [history, setHistory] = useState<RevisionInfo[]>([]);
@@ -91,7 +103,7 @@ export default function App() {
           id: 'welcome',
           role: 'assistant',
           content:
-            'Ahoj! Jsem váš lokální AI PDF Assistant. Můžete mi zadávat přirozené příkazy v češtině k úpravě otevřeného dokumentu.\n\nNapříklad:\n• „Změň datum 1. 9. 2026 na 10. 9. 2026.“\n• „Změň Hello World na Hello David.“\n• „Začerň IČO a důvěrný údaj.“\n• „Odstraň tento odstavec.“\n• Nebo klikněte na libovolný text v náhledu a napište: „Změň tohle na...“',
+            'Ahoj! Jsem váš lokální AI PDF Assistant. Můžete mi zadávat přirozené příkazy v češtině k úpravě otevřeného dokumentu.\n\nNapříklad:\n• „Změň datum 1. 9. 2026 na 10. 9. 2026.“\n• „Změň Hello World na Hello David.“\n• „Začerň IČO a důvěrný údaj.“\n• „Odstraň tento odstavec.“\n• Otevřít můžete i **zaheslovaná PDF** (systém vás vyzve k zadání hesla a bezpečně jej dešifruje).',
           timestamp: new Date().toLocaleTimeString(),
         },
       ]);
@@ -100,10 +112,40 @@ export default function App() {
     }
   };
 
-  // Upload PDF
-  const handleUpload = async (file: File) => {
+  // Load Locked Sample Document
+  const handleLoadSampleLocked = async () => {
     try {
-      const analysis = await api.uploadDocument(file);
+      const sampleLocked = await api.loadSampleLockedDocument();
+      setPendingProtectedDoc({
+        id: sampleLocked.id || sampleLocked.metadata?.id,
+        filename: sampleLocked.filename || 'Sample_Protected_NDA_2026.pdf',
+        fileSizeBytes: sampleLocked.file_size_bytes || sampleLocked.metadata?.file_size_bytes,
+      });
+      setPasswordModalError(null);
+      setIsPasswordModalOpen(true);
+    } catch (err: any) {
+      console.error('Failed to load locked sample:', err);
+    }
+  };
+
+  // Upload PDF
+  const handleUpload = async (file: File, password?: string) => {
+    try {
+      const analysis = await api.uploadDocument(file, password);
+
+      // Check if file is password-protected and requires user unlock
+      if (analysis.requires_password || (analysis.is_password_protected && (!analysis.pages || analysis.pages.length === 0))) {
+        setPendingProtectedDoc({
+          id: analysis.id || analysis.metadata?.id,
+          filename: file.name,
+          fileSizeBytes: file.size,
+          file,
+        });
+        setPasswordModalError(null);
+        setIsPasswordModalOpen(true);
+        return;
+      }
+
       setDocAnalysis(analysis);
       setCurrentPage(1);
       setSelectedElement(null);
@@ -116,12 +158,54 @@ export default function App() {
           role: 'assistant',
           content: `Dokument „${analysis.metadata.filename}“ (${analysis.metadata.total_pages} ${
             analysis.metadata.total_pages === 1 ? 'strana' : 'strany'
-          }) byl úspěšně načten a analyzován. Jaké úpravy si přejete provést?`,
+          }) byl úspěšně načten a analyzován. ${
+            analysis.metadata.is_password_protected ? '🔓 (Zabezpečený dokument byl úspěšně odemčen).' : ''
+          } Jaké úpravy si přejete provést?`,
           timestamp: new Date().toLocaleTimeString(),
         },
       ]);
     } catch (err: any) {
       alert(`Chyba při nahrávání: ${err.message || err}`);
+    }
+  };
+
+  // Unlock password protected document
+  const handleUnlockDocument = async (password: string) => {
+    if (!pendingProtectedDoc) return;
+    setIsUnlocking(true);
+    setPasswordModalError(null);
+
+    try {
+      let analysis: DocumentAnalysis;
+      if (pendingProtectedDoc.id) {
+        analysis = await api.unlockDocument(pendingProtectedDoc.id, password);
+      } else if (pendingProtectedDoc.file) {
+        analysis = await api.uploadDocument(pendingProtectedDoc.file, password);
+      } else {
+        throw new Error('Není dostupný platný odkaz na soubor.');
+      }
+
+      setDocAnalysis(analysis);
+      setCurrentPage(1);
+      setSelectedElement(null);
+      setIsPasswordModalOpen(false);
+      setPendingProtectedDoc(null);
+      setRevisionCounter((prev) => prev + 1);
+      await refreshHistory(analysis.metadata.id);
+
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: 'doc_unlocked_' + Date.now(),
+          role: 'assistant',
+          content: `🔓 Dokument „${analysis.metadata.filename}“ byl úspěšně odemčen a dešifrován. Nyní s ním můžete plně pracovat a aplikovat AI příkazy.`,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
+    } catch (err: any) {
+      setPasswordModalError(err.message || 'Zadané heslo není správné. Zkuste to prosím znovu.');
+    } finally {
+      setIsUnlocking(false);
     }
   };
 
@@ -317,6 +401,7 @@ export default function App() {
         document={docAnalysis?.metadata || null}
         onUpload={handleUpload}
         onLoadSample={handleLoadSample}
+        onLoadSampleLocked={handleLoadSampleLocked}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={canUndo}
@@ -395,6 +480,21 @@ export default function App() {
         }}
         ollamaStatus={ollamaStatus}
         onRefreshOllama={checkOllama}
+      />
+
+      {/* Password Unlock Modal for Encrypted PDFs */}
+      <PasswordModal
+        isOpen={isPasswordModalOpen}
+        filename={pendingProtectedDoc?.filename || 'Chráněný dokument'}
+        fileSizeBytes={pendingProtectedDoc?.fileSizeBytes}
+        onUnlock={handleUnlockDocument}
+        onCancel={() => {
+          setIsPasswordModalOpen(false);
+          setPendingProtectedDoc(null);
+          setPasswordModalError(null);
+        }}
+        error={passwordModalError}
+        isLoading={isUnlocking}
       />
     </div>
   );

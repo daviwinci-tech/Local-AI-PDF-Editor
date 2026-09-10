@@ -12,11 +12,16 @@ Kompletní plně funkční desktopově působící webová aplikace pro **lokál
 1. **Skutečná úprava PDF (Real PDF Editing Engine)**:
    - Žádné pouhé kreslení na plátno — aplikace fyzicky mění PDF strukturu, rediguje původní obsah a vkládá nový text se zachováním pozic, barev a velikostí.
    - **Podporované operace**: `replace_text`, `replace_all_text`, `add_text`, `delete_text`, `redact` (anonymizace / začernění), `add_image` (loga / razítka), `delete_image`, `move_text`, `change_font_size`, `change_color`, `duplicate_element`.
-2. **Lokální AI přes Ollama (100% Offline & Private)**:
-   - Podpora modelů `qwen2.5`, `llama3.1`, `mistral`, `deepseek-r1` a dalších.
-   - Žádné povinné cloudové klíče, veškerá data zůstávají na vašem počítači.
-   - Detekce dostupnosti Ollama (`http://localhost:11434`) s tlačítkem Retry.
-   - Inteligentní okamžitý rule-engine parser pro nulovou latenci + LLM fallback.
+2. **Podpora zaheslovaných a šifrovaných PDF (Password-Protected PDFs)**:
+   - Automatická detekce šifrování (AES-128 / AES-256) přes systémový engine `qpdf`.
+   - Elegantní dialog pro zadání hesla s možností zobrazení/skrytí hesla.
+   - Po zadání platného hesla je soubor bezpečně dešifrován a zpřístupněn pro veškeré lokální AI úpravy, revize a export.
+   - V horní liště je k dispozici tlačítko **„Zaheslovaný vzor (1234)“** pro okamžité vyzkoušení.
+3. **Česká diakritika & TTF fonty (Full Unicode Support)**:
+   - Integrovaný `@pdf-lib/fontkit` a TrueType fonty LiberationSans (Regular, Bold, Italic) pro bezchybné vykreslení všech českých znaků (ě, š, č, ř, ž, ý, á, í, é, ů, ú, ť, ď, ň, ó).
+4. **Inline Quick Edit & Auto-fit Box Scaling**:
+   - Dvojklikem nebo kliknutím na textový blok v náhledu otevřete plovoucí popover pro bleskovou přímou editaci bez nutnosti psát AI prompt.
+   - Automatický přepočet velikosti fontu podle šířky rámečku, aby text nikdy nepřetekl.
 3. **Desktop-Class UI & Live Preview**:
    - Velký PDF Viewer postavený na **PDF.js** s vysokým DPI a plynulým zoomem (Fit Width, Fit Page, 50% - 200%).
    - **Interaktivní výběr elementů**: Kliknutím na textový blok v náhledu jej označíte a napíšete např. *„Změň tohle na 25 000 Kč“*.

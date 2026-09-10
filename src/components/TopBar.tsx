@@ -12,6 +12,9 @@ import {
   AlertCircle,
   RefreshCw,
   SplitSquareVertical,
+  Lock,
+  Unlock,
+  KeyRound,
 } from 'lucide-react';
 import { DocumentMetadata } from '../types';
 
@@ -19,6 +22,7 @@ interface TopBarProps {
   document: DocumentMetadata | null;
   onUpload: (file: File) => void;
   onLoadSample: () => void;
+  onLoadSampleLocked?: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -36,6 +40,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   document,
   onUpload,
   onLoadSample,
+  onLoadSampleLocked,
   onUndo,
   onRedo,
   canUndo,
@@ -72,9 +77,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           <div className="hidden md:flex items-center gap-2 pl-2 border-l border-zinc-800">
             <FileText className="w-4 h-4 text-zinc-400" />
             <div className="flex flex-col">
-              <span className="text-xs font-semibold text-zinc-200 max-w-[200px] lg:max-w-[280px] truncate" title={document.filename}>
-                {document.filename}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-zinc-200 max-w-[160px] lg:max-w-[240px] truncate" title={document.filename}>
+                  {document.filename}
+                </span>
+                {document.is_password_protected && (
+                  <span className="flex items-center gap-1 px-1.5 py-0.2 bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[10px] rounded font-medium" title="Tento dokument byl chráněn heslem">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Zaheslováno</span>
+                  </span>
+                )}
+              </div>
               <span className="text-[10px] text-zinc-400">
                 Revize {document.current_revision} z {document.total_revisions} • {document.total_pages} {document.total_pages === 1 ? 'strana' : 'strany'}
               </span>
@@ -96,7 +109,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <button
           onClick={() => fileInputRef.current?.click()}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-100 rounded-md text-xs font-medium transition shadow-sm border border-zinc-700/60 cursor-pointer"
-          title="Otevřít PDF z počítače"
+          title="Otevřít libovolné PDF z počítače (včetně zaheslovaných)"
         >
           <FileUp className="w-3.5 h-3.5 text-indigo-400" />
           <span className="hidden sm:inline">Otevřít PDF</span>
@@ -108,8 +121,19 @@ export const TopBar: React.FC<TopBarProps> = ({
           title="Načíst ukázkovou smlouvu pro okamžité vyzkoušení AI příkazů"
         >
           <Layers className="w-3.5 h-3.5 text-indigo-400" />
-          <span className="hidden lg:inline">Ukázkový dokument</span>
+          <span className="hidden lg:inline">Ukázka</span>
         </button>
+
+        {onLoadSampleLocked && (
+          <button
+            onClick={onLoadSampleLocked}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-950/50 hover:bg-amber-900/70 active:bg-amber-800 text-amber-200 border border-amber-700/50 rounded-md text-xs font-medium transition cursor-pointer"
+            title="Vyzkoušet zaheslovaný vzor (heslo: 1234)"
+          >
+            <Lock className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden xl:inline">Zaheslovaný vzor (1234)</span>
+          </button>
+        )}
 
         <div className="h-4 w-px bg-zinc-800 mx-1" />
 

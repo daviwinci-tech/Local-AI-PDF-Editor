@@ -82,12 +82,20 @@ export interface DocumentMetadata {
   current_revision: number;
   total_revisions: number;
   has_ocr_content: boolean;
+  is_password_protected?: boolean;
+  requires_password?: boolean;
   pages: PageInfo[];
 }
 
 export interface DocumentAnalysis {
   metadata: DocumentMetadata;
   pages: PageInfo[];
+  requires_password?: boolean;
+  is_password_protected?: boolean;
+  id?: string;
+  filename?: string;
+  file_size_bytes?: number;
+  message?: string;
 }
 
 export interface AICommandResponse {

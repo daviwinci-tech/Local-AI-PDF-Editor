@@ -6,16 +6,35 @@ export const api = {
     return res.json();
   },
 
-  async uploadDocument(file: File): Promise<DocumentAnalysis> {
+  async uploadDocument(file: File, password?: string): Promise<DocumentAnalysis> {
     const formData = new FormData();
     formData.append('file', file);
+    if (password) {
+      formData.append('password', password);
+    }
     const res = await fetch('/api/documents/upload', {
       method: 'POST',
       body: formData,
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Upload failed' }));
-      throw new Error(err.error || err.detail || 'Upload failed');
+      if (err.requires_password || err.is_password_protected) {
+        return err as DocumentAnalysis;
+      }
+      throw new Error(err.error || err.message || err.detail || 'Upload failed');
+    }
+    return res.json();
+  },
+
+  async unlockDocument(docId: string, password: string): Promise<DocumentAnalysis> {
+    const res = await fetch(`/api/documents/${docId}/unlock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Odemčení se nezdařilo' }));
+      throw new Error(err.message || err.error || 'Zadané heslo není správné.');
     }
     return res.json();
   },
@@ -24,6 +43,14 @@ export const api = {
     const res = await fetch('/api/documents/sample', { method: 'POST' });
     if (!res.ok) {
       throw new Error('Failed to create sample document');
+    }
+    return res.json();
+  },
+
+  async loadSampleLockedDocument(): Promise<DocumentAnalysis> {
+    const res = await fetch('/api/documents/sample-locked', { method: 'POST' });
+    if (!res.ok) {
+      throw new Error('Failed to create sample locked document');
     }
     return res.json();
   },

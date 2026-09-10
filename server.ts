@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
+import os from "os";
+import { execSync } from "child_process";
 import multer from "multer";
 import { PDFDocument, rgb, StandardFonts, PDFFont } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
@@ -71,9 +73,82 @@ interface DocumentSession {
   current_revision_index: number;
   pages: PageInfo[];
   chat_history: Array<{ role: "user" | "assistant"; content: string }>;
+  is_password_protected?: boolean;
+  password?: string;
+  original_encrypted_bytes?: Uint8Array;
 }
 
 const sessions: Map<string, DocumentSession> = new Map();
+
+// Helper to check and decrypt PDF using qpdf
+function tryDecryptPdf(
+  pdfBytes: Uint8Array,
+  password?: string
+): { success: boolean; isEncrypted: boolean; decryptedBytes?: Uint8Array; error?: string } {
+  const tmpDir = os.tmpdir();
+  const id = Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+  const inPath = path.join(tmpDir, `in_${id}.pdf`);
+  const outPath = path.join(tmpDir, `out_${id}.pdf`);
+
+  fs.writeFileSync(inPath, Buffer.from(pdfBytes));
+
+  try {
+    // 1. Check encryption status
+    let checkOut = "";
+    try {
+      checkOut = execSync(`qpdf --show-encryption ${inPath} 2>&1`, { encoding: "utf-8" });
+    } catch (e: any) {
+      checkOut = String(e.stdout || e.message || "");
+    }
+
+    const isEncrypted = !checkOut.includes("File is not encrypted");
+
+    if (!isEncrypted) {
+      try {
+        fs.unlinkSync(inPath);
+      } catch (e) {}
+      return { success: true, isEncrypted: false, decryptedBytes: pdfBytes };
+    }
+
+    // PDF is encrypted - check if password was provided
+    if (!password) {
+      try {
+        fs.unlinkSync(inPath);
+      } catch (e) {}
+      return { success: false, isEncrypted: true, error: "PASSWORD_REQUIRED" };
+    }
+
+    // Attempt to decrypt with provided password
+    execSync(`qpdf --decrypt --password=${JSON.stringify(password)} ${inPath} ${outPath} 2>&1`);
+    const decBytes = fs.readFileSync(outPath);
+
+    try {
+      fs.unlinkSync(inPath);
+    } catch (e) {}
+    try {
+      fs.unlinkSync(outPath);
+    } catch (e) {}
+
+    return {
+      success: true,
+      isEncrypted: true,
+      decryptedBytes: new Uint8Array(decBytes),
+    };
+  } catch (err: any) {
+    try {
+      fs.unlinkSync(inPath);
+    } catch (e) {}
+    try {
+      fs.unlinkSync(outPath);
+    } catch (e) {}
+
+    const msg = String(err.message || err.stdout || err.stderr || "");
+    if (msg.includes("invalid password") || msg.includes("password") || msg.includes("exit code 2")) {
+      return { success: false, isEncrypted: true, error: "INVALID_PASSWORD" };
+    }
+    return { success: false, isEncrypted: true, error: msg || "DECRYPTION_FAILED" };
+  }
+}
 
 let appSettings = {
   ollama_url: "http://localhost:11434",
@@ -334,6 +409,114 @@ async function createSamplePdfBytes(): Promise<{ bytes: Uint8Array; pages: PageI
   ];
 
   return { bytes: pdfBytes, pages: pagesInfo };
+}
+
+// Helper to create locked sample PDF with password (e.g. 1234)
+async function createSampleLockedPdfBytes(password: string = "1234"): Promise<{ bytes: Uint8Array; pages: PageInfo[]; password: string }> {
+  const pdfDoc = await PDFDocument.create();
+  const { regularFont, boldFont } = await getDocumentFonts(pdfDoc);
+
+  // Page 1
+  const page1 = pdfDoc.addPage([595.3, 841.9]);
+  const { width: p1W, height: p1H } = page1.getSize();
+
+  // Confidential Header Box
+  page1.drawRectangle({
+    x: 50,
+    y: p1H - 95,
+    width: 495,
+    height: 55,
+    color: rgb(0.98, 0.94, 0.94),
+    borderColor: rgb(0.8, 0.2, 0.2),
+    borderWidth: 1.5,
+  });
+
+  safeDrawText(page1, "🔒 DŮVĚRNÁ DOHODA O MLČENLIVOSTI (NDA) 2026", {
+    x: 70,
+    y: p1H - 65,
+    size: 13,
+    font: boldFont,
+    color: rgb(0.6, 0.1, 0.1),
+  });
+
+  safeDrawText(page1, "ZABEZPEČENÝ DOKUMENT • POUZE PRO OPRÁVNĚNÉ OSOBY", {
+    x: 70,
+    y: p1H - 85,
+    size: 9,
+    font: regularFont,
+    color: rgb(0.5, 0.2, 0.2),
+  });
+
+  const linesP1: Array<{ text: string; y: number; bold?: boolean; color?: { r: number; g: number; b: number }; size?: number }> = [
+    { text: "Referenční kód: NDA-SEC-2026-8841", y: p1H - 130, size: 11 },
+    { text: "Datum vyhotovení: 5. 9. 2026", y: p1H - 155, size: 11, bold: true },
+    { text: "Poskytovatel: SecureData Technologies a.s.", y: p1H - 195, size: 11, bold: true },
+    { text: "Zástupce: Ing. Tomáš Dvořák", y: p1H - 220, size: 11 },
+    { text: "Přísně tajné IČO: 98765432", y: p1H - 245, size: 11, bold: true, color: { r: 0.7, g: 0.1, b: 0.1 } },
+    { text: "Příjemce informací: Partner Global s.r.o.", y: p1H - 290, size: 11, bold: true },
+    { text: "Odpovědná osoba: Jana Malá", y: p1H - 315, size: 11 },
+    { text: "Smluvní pokuta za porušení: 500 000 Kč", y: p1H - 360, size: 11, bold: true },
+    { text: "Doba platnosti závazku: 5 let od podpisu", y: p1H - 385, size: 11 },
+    { text: "Zkušební poznámka k odstranění: Testovací klíč Alpha-99", y: p1H - 440, size: 10, color: { r: 0.5, g: 0.5, b: 0.5 } },
+    { text: "Tento dokument byl úspěšně odemčen a je připraven k lokálním úpravám.", y: p1H - 465, size: 10, color: { r: 0.1, g: 0.5, b: 0.2 } },
+    { text: "Heslo dokumentu pro testování: 1234", y: 40, size: 9, color: { r: 0.4, g: 0.4, b: 0.4 } },
+  ];
+
+  const textBlocksP1: TextBlock[] = [];
+  for (let i = 0; i < linesP1.length; i++) {
+    const l = linesP1[i];
+    const f = l.bold ? boldFont : regularFont;
+    const s = l.size || 11;
+    const c = l.color ? rgb(l.color.r, l.color.g, l.color.b) : rgb(0.15, 0.15, 0.15);
+    safeDrawText(page1, l.text, {
+      x: 70,
+      y: l.y,
+      size: s,
+      font: f,
+      color: c,
+    });
+    const textWidth = safeMeasureWidth(f, l.text, s);
+    textBlocksP1.push({
+      id: `p1_b${i}`,
+      text: l.text,
+      bbox: [70, p1H - l.y - s, 70 + textWidth, p1H - l.y + 2],
+      font_name: l.bold ? "Helvetica-Bold" : "Helvetica",
+      font_size: s,
+      color: l.color ? `#${Math.round(l.color.r * 255).toString(16).padStart(2, "0")}${Math.round(l.color.g * 255).toString(16).padStart(2, "0")}${Math.round(l.color.b * 255).toString(16).padStart(2, "0")}` : "#262626",
+      page: 1,
+      line_count: 1,
+    });
+  }
+
+  const plainBytes = await pdfDoc.save();
+
+  // Encrypt with qpdf AES-256
+  const tmpDir = os.tmpdir();
+  const id = Math.random().toString(36).substring(2, 10);
+  const plainPath = path.join(tmpDir, `plain_${id}.pdf`);
+  const encPath = path.join(tmpDir, `enc_${id}.pdf`);
+
+  fs.writeFileSync(plainPath, Buffer.from(plainBytes));
+  execSync(`qpdf --encrypt ${JSON.stringify(password)} ${JSON.stringify(password)} 256 -- ${plainPath} ${encPath}`);
+  const encryptedBytes = fs.readFileSync(encPath);
+
+  try { fs.unlinkSync(plainPath); } catch (e) {}
+  try { fs.unlinkSync(encPath); } catch (e) {}
+
+  const pagesInfo: PageInfo[] = [
+    {
+      page_number: 1,
+      width: 595.3,
+      height: 841.9,
+      rotation: 0,
+      text_blocks: textBlocksP1,
+      image_blocks: [],
+      has_text_layer: true,
+      is_scanned: false,
+    },
+  ];
+
+  return { bytes: new Uint8Array(encryptedBytes), pages: pagesInfo, password };
 }
 
 // Inspect PDF bytes to extract basic text blocks and page info
@@ -936,7 +1119,7 @@ app.post("/api/settings", (req, res) => {
   res.json({ status: "updated", settings: appSettings });
 });
 
-// Upload endpoint
+// Upload endpoint with encryption & password handling
 app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -945,17 +1128,57 @@ app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
     const filename = req.file.originalname || "document.pdf";
     const docId = generateId();
     const bytes = new Uint8Array(req.file.buffer);
+    const password = req.body?.password || (req.headers["x-pdf-password"] as string) || undefined;
 
-    const { pages } = await analyzePdfBytes(bytes, filename);
+    // Check encryption and attempt decryption
+    const decResult = tryDecryptPdf(bytes, password);
+
+    if (!decResult.success) {
+      if (decResult.error === "PASSWORD_REQUIRED" || decResult.error === "INVALID_PASSWORD") {
+        // Create pending password-protected session
+        const pendingSession: DocumentSession = {
+          id: docId,
+          filename,
+          original_filename: filename,
+          created_at: new Date().toISOString(),
+          revisions: [],
+          current_revision_index: 0,
+          pages: [],
+          chat_history: [],
+          is_password_protected: true,
+          original_encrypted_bytes: bytes,
+        };
+        sessions.set(docId, pendingSession);
+
+        return res.status(401).json({
+          is_password_protected: true,
+          requires_password: true,
+          id: docId,
+          filename,
+          file_size_bytes: bytes.length,
+          error: decResult.error,
+          message:
+            decResult.error === "INVALID_PASSWORD"
+              ? "Zadané heslo není správné. Zkuste to prosím znovu."
+              : "Tento PDF dokument je chráněn heslem. Pro otevření a úpravy zadejte platné heslo.",
+        });
+      }
+      return res.status(400).json({ error: `Chyba při zpracování PDF: ${decResult.error}` });
+    }
+
+    const effectiveBytes = decResult.decryptedBytes || bytes;
+    const { pages } = await analyzePdfBytes(effectiveBytes, filename);
 
     const initialRevision: RevisionInfo = {
       id: "rev_1",
       revision_number: 1,
       timestamp: new Date().toLocaleTimeString(),
-      description: "Původní nahraný dokument",
+      description: decResult.isEncrypted
+        ? "Odemčený zabezpečený dokument"
+        : "Původní nahraný dokument",
       operations_count: 0,
       modified_pages: [],
-      pdf_bytes: bytes,
+      pdf_bytes: effectiveBytes,
     };
 
     const session: DocumentSession = {
@@ -967,6 +1190,9 @@ app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
       current_revision_index: 0,
       pages,
       chat_history: [],
+      is_password_protected: decResult.isEncrypted,
+      password: password,
+      original_encrypted_bytes: decResult.isEncrypted ? bytes : undefined,
     };
 
     sessions.set(docId, session);
@@ -977,11 +1203,12 @@ app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
         filename,
         original_filename: filename,
         total_pages: pages.length,
-        file_size_bytes: bytes.length,
+        file_size_bytes: effectiveBytes.length,
         created_at: session.created_at,
         current_revision: 1,
         total_revisions: 1,
         has_ocr_content: false,
+        is_password_protected: decResult.isEncrypted,
         pages,
       },
       pages,
@@ -991,7 +1218,74 @@ app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
   }
 });
 
-// Generate sample test document
+// Unlock password-protected document endpoint
+app.post("/api/documents/:id/unlock", async (req, res) => {
+  try {
+    const session = sessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({ error: "Dokument nebyl nalezen." });
+    }
+
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: "Zadejte heslo k dokumentu." });
+    }
+
+    const encryptedBytes = session.original_encrypted_bytes || session.revisions[0]?.pdf_bytes;
+    if (!encryptedBytes) {
+      return res.status(400).json({ error: "Chybí data zašifrovaného souboru." });
+    }
+
+    const decResult = tryDecryptPdf(encryptedBytes, password);
+    if (!decResult.success || !decResult.decryptedBytes) {
+      return res.status(401).json({
+        error: "INVALID_PASSWORD",
+        message: "Zadané heslo není správné. Zkuste to prosím znovu.",
+      });
+    }
+
+    const effectiveBytes = decResult.decryptedBytes;
+    const { pages } = await analyzePdfBytes(effectiveBytes, session.filename);
+
+    const initialRevision: RevisionInfo = {
+      id: "rev_1",
+      revision_number: 1,
+      timestamp: new Date().toLocaleTimeString(),
+      description: "Odemčený zabezpečený dokument",
+      operations_count: 0,
+      modified_pages: [],
+      pdf_bytes: effectiveBytes,
+    };
+
+    session.revisions = [initialRevision];
+    session.current_revision_index = 0;
+    session.pages = pages;
+    session.password = password;
+    session.is_password_protected = true;
+
+    res.json({
+      success: true,
+      metadata: {
+        id: session.id,
+        filename: session.filename,
+        original_filename: session.original_filename,
+        total_pages: pages.length,
+        file_size_bytes: effectiveBytes.length,
+        created_at: session.created_at,
+        current_revision: 1,
+        total_revisions: 1,
+        has_ocr_content: false,
+        is_password_protected: true,
+        pages,
+      },
+      pages,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to unlock document" });
+  }
+});
+
+// Generate standard sample test document
 app.post("/api/documents/sample", async (req, res) => {
   try {
     const docId = generateId();
@@ -1016,6 +1310,7 @@ app.post("/api/documents/sample", async (req, res) => {
       current_revision_index: 0,
       pages,
       chat_history: [],
+      is_password_protected: false,
     };
 
     sessions.set(docId, session);
@@ -1031,6 +1326,7 @@ app.post("/api/documents/sample", async (req, res) => {
         current_revision: 1,
         total_revisions: 1,
         has_ocr_content: false,
+        is_password_protected: false,
         pages,
       },
       pages,
@@ -1040,22 +1336,75 @@ app.post("/api/documents/sample", async (req, res) => {
   }
 });
 
+// Generate password-protected sample test document (Password: 1234)
+app.post("/api/documents/sample-locked", async (req, res) => {
+  try {
+    const docId = generateId();
+    const testPassword = "1234";
+    const { bytes: encBytes, pages, password } = await createSampleLockedPdfBytes(testPassword);
+
+    // Save as pending password-protected session
+    const session: DocumentSession = {
+      id: docId,
+      filename: "Sample_Protected_NDA_2026.pdf",
+      original_filename: "Sample_Protected_NDA_2026.pdf",
+      created_at: new Date().toISOString(),
+      revisions: [],
+      current_revision_index: 0,
+      pages: [],
+      chat_history: [],
+      is_password_protected: true,
+      original_encrypted_bytes: encBytes,
+    };
+
+    sessions.set(docId, session);
+
+    res.json({
+      is_password_protected: true,
+      requires_password: true,
+      id: docId,
+      filename: "Sample_Protected_NDA_2026.pdf",
+      file_size_bytes: encBytes.length,
+      password_hint: "1234",
+      message: "Tento PDF dokument je zaheslován. Ukázkové heslo je: 1234",
+      metadata: {
+        id: docId,
+        filename: "Sample_Protected_NDA_2026.pdf",
+        original_filename: "Sample_Protected_NDA_2026.pdf",
+        total_pages: 1,
+        file_size_bytes: encBytes.length,
+        created_at: session.created_at,
+        current_revision: 1,
+        total_revisions: 1,
+        has_ocr_content: false,
+        is_password_protected: true,
+        requires_password: true,
+        pages: [],
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create locked sample PDF" });
+  }
+});
+
 // Get document
 app.get("/api/documents/:id", (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: "Document not found" });
 
+  const currentRev = session.revisions[session.current_revision_index];
   res.json({
     metadata: {
       id: session.id,
       filename: session.filename,
       original_filename: session.original_filename,
       total_pages: session.pages.length,
-      file_size_bytes: session.revisions[session.current_revision_index].pdf_bytes.length,
+      file_size_bytes: currentRev ? currentRev.pdf_bytes.length : 0,
       created_at: session.created_at,
       current_revision: session.current_revision_index + 1,
-      total_revisions: session.revisions.length,
+      total_revisions: Math.max(1, session.revisions.length),
       has_ocr_content: false,
+      is_password_protected: session.is_password_protected || false,
       pages: session.pages,
     },
     pages: session.pages,
