@@ -32,6 +32,9 @@ interface TextBlock {
   color: string;
   page: number;
   line_count: number;
+  font_weight?: string;
+  font_style?: string;
+  bg_color?: string;
 }
 
 interface ImageBlock {
@@ -183,65 +186,243 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r: 0, g: 0, b: 0 };
 }
 
-// Embed Unicode-capable TTF font or fallback cleanly
-async function getDocumentFonts(pdfDoc: PDFDocument): Promise<{ regularFont: PDFFont; boldFont: PDFFont }> {
+// Helper to read TTF font bytes
+function readFontBytes(fontFileName: string): Buffer | null {
+  const paths = [
+    path.join(process.cwd(), "public", "fonts", fontFileName),
+    path.join(process.cwd(), "dist", "fonts", fontFileName),
+    path.join("/usr/share/fonts/truetype/liberation", fontFileName),
+  ];
+  for (const p of paths) {
+    if (fs.existsSync(p)) {
+      try {
+        return fs.readFileSync(p);
+      } catch (e) {}
+    }
+  }
+  return null;
+}
+
+export interface FontBundle {
+  sans: { regular: PDFFont; bold: PDFFont; italic: PDFFont; boldItalic: PDFFont };
+  serif: { regular: PDFFont; bold: PDFFont; italic: PDFFont; boldItalic: PDFFont };
+  mono: { regular: PDFFont; bold: PDFFont; italic: PDFFont; boldItalic: PDFFont };
+}
+
+// Embed complete suite of Unicode-capable fonts across Sans, Serif, and Monospace
+async function getDocumentFonts(pdfDoc: PDFDocument): Promise<FontBundle & { regularFont: PDFFont; boldFont: PDFFont }> {
   try {
     pdfDoc.registerFontkit(fontkit);
   } catch (e) {}
 
-  let regularFont: PDFFont;
-  let boldFont: PDFFont;
-
-  const regPaths = [
-    path.join(process.cwd(), "public", "fonts", "LiberationSans-Regular.ttf"),
-    path.join(process.cwd(), "dist", "fonts", "LiberationSans-Regular.ttf"),
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-  ];
-  const boldPaths = [
-    path.join(process.cwd(), "public", "fonts", "LiberationSans-Bold.ttf"),
-    path.join(process.cwd(), "dist", "fonts", "LiberationSans-Bold.ttf"),
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-  ];
-
-  let regBytes: Buffer | null = null;
-  for (const p of regPaths) {
-    if (fs.existsSync(p)) {
-      regBytes = fs.readFileSync(p);
-      break;
+  async function loadVariant(fontFileName: string, fallbackStd: any): Promise<PDFFont> {
+    const bytes = readFontBytes(fontFileName);
+    if (bytes) {
+      try {
+        return await pdfDoc.embedFont(bytes, { subset: true });
+      } catch (e) {}
     }
+    return await pdfDoc.embedFont(fallbackStd);
   }
 
-  let boldBytes: Buffer | null = null;
-  for (const p of boldPaths) {
-    if (fs.existsSync(p)) {
-      boldBytes = fs.readFileSync(p);
-      break;
-    }
+  const [
+    sansReg, sansBold, sansItalic, sansBoldItalic,
+    serifReg, serifBold, serifItalic, serifBoldItalic,
+    monoReg, monoBold, monoItalic, monoBoldItalic,
+  ] = await Promise.all([
+    loadVariant("LiberationSans-Regular.ttf", StandardFonts.Helvetica),
+    loadVariant("LiberationSans-Bold.ttf", StandardFonts.HelveticaBold),
+    loadVariant("LiberationSans-Italic.ttf", StandardFonts.HelveticaOblique),
+    loadVariant("LiberationSans-BoldItalic.ttf", StandardFonts.HelveticaBoldOblique),
+
+    loadVariant("LiberationSerif-Regular.ttf", StandardFonts.TimesRoman),
+    loadVariant("LiberationSerif-Bold.ttf", StandardFonts.TimesRomanBold),
+    loadVariant("LiberationSerif-Italic.ttf", StandardFonts.TimesRomanItalic),
+    loadVariant("LiberationSerif-BoldItalic.ttf", StandardFonts.TimesRomanBoldItalic),
+
+    loadVariant("LiberationMono-Regular.ttf", StandardFonts.Courier),
+    loadVariant("LiberationMono-Bold.ttf", StandardFonts.CourierBold),
+    loadVariant("LiberationMono-Italic.ttf", StandardFonts.CourierOblique),
+    loadVariant("LiberationMono-BoldItalic.ttf", StandardFonts.CourierBoldOblique),
+  ]);
+
+  const bundle: FontBundle = {
+    sans: { regular: sansReg, bold: sansBold, italic: sansItalic, boldItalic: sansBoldItalic },
+    serif: { regular: serifReg, bold: serifBold, italic: serifItalic, boldItalic: serifBoldItalic },
+    mono: { regular: monoReg, bold: monoBold, italic: monoItalic, boldItalic: monoBoldItalic },
+  };
+
+  return {
+    ...bundle,
+    regularFont: sansReg,
+    boldFont: sansBold,
+  };
+}
+
+// Dynamically match font family, weight, and style based on original block or requested properties
+function resolveMatchingFont(
+  fonts: FontBundle,
+  fontName?: string,
+  fontWeight?: string | number,
+  fontStyle?: string
+): PDFFont {
+  const name = (fontName || "").toLowerCase();
+  const weight = String(fontWeight || "").toLowerCase();
+  const style = String(fontStyle || "").toLowerCase();
+
+  // 1. Identify Family (Serif vs Mono vs Sans)
+  let family: "sans" | "serif" | "mono" = "sans";
+  if (
+    name.includes("serif") ||
+    name.includes("times") ||
+    name.includes("roman") ||
+    name.includes("georgia") ||
+    name.includes("cambria") ||
+    name.includes("garamond") ||
+    name.includes("palatino") ||
+    name.includes("minion") ||
+    name.includes("baskerville")
+  ) {
+    family = "serif";
+  } else if (
+    name.includes("mono") ||
+    name.includes("courier") ||
+    name.includes("consolas") ||
+    name.includes("menlo") ||
+    name.includes("sourcecode") ||
+    name.includes("code") ||
+    name.includes("typewriter") ||
+    name.includes("fixed")
+  ) {
+    family = "mono";
   }
 
-  if (regBytes) {
-    try {
-      regularFont = await pdfDoc.embedFont(regBytes, { subset: true });
-    } catch (e) {
-      regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    }
-  } else {
-    regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  }
+  // 2. Identify Weight & Style
+  const isBold =
+    weight === "bold" ||
+    weight === "700" ||
+    weight === "800" ||
+    weight === "900" ||
+    weight === "600" ||
+    weight === "semibold" ||
+    name.includes("bold") ||
+    name.includes("black") ||
+    name.includes("heavy") ||
+    name.includes("medium");
 
-  if (boldBytes) {
-    try {
-      boldFont = await pdfDoc.embedFont(boldBytes, { subset: true });
-    } catch (e) {
-      boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    }
-  } else {
-    boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  }
+  const isItalic =
+    style === "italic" ||
+    style === "oblique" ||
+    name.includes("italic") ||
+    name.includes("oblique") ||
+    name.includes("slanted");
 
-  return { regularFont, boldFont };
+  if (isBold && isItalic) {
+    return fonts[family].boldItalic;
+  }
+  if (isBold) {
+    return fonts[family].bold;
+  }
+  if (isItalic) {
+    return fonts[family].italic;
+  }
+  return fonts[family].regular;
+}
+
+// Adaptive background color detection for non-white document areas, table rows, and banners
+function resolveEraserColor(
+  opBgColor?: string,
+  targetBlockBgColor?: string,
+  targetBlockTextColor?: string
+): { r: number; g: number; b: number } {
+  if (opBgColor) {
+    return hexToRgb(opBgColor);
+  }
+  if (targetBlockBgColor) {
+    return hexToRgb(targetBlockBgColor);
+  }
+  if (targetBlockTextColor) {
+    const textRgb = hexToRgb(targetBlockTextColor);
+    const lum = 0.299 * textRgb.r + 0.587 * textRgb.g + 0.114 * textRgb.b;
+    // Bright text (e.g. white or light yellow text) sits on a dark background
+    if (lum > 0.8) {
+      return { r: 0.12, g: 0.18, b: 0.32 };
+    }
+  }
+  return { r: 1, g: 1, b: 1 };
+}
+
+// True PDF Redaction & Content Stream Sanitizer (removes text tokens from underlying PDF stream)
+function sanitizePdfContentStreams(pdfBytes: Uint8Array, wordsToScrub: string[]): Uint8Array {
+  const filteredWords = Array.from(
+    new Set(
+      wordsToScrub
+        .map((w) => w?.trim())
+        .filter((w): w is string => Boolean(w && w.length >= 2))
+    )
+  );
+
+  if (filteredWords.length === 0) return pdfBytes;
+
+  const tmpDir = os.tmpdir();
+  const id = Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+  const inPath = path.join(tmpDir, `in_san_${id}.pdf`);
+  const qdfPath = path.join(tmpDir, `qdf_san_${id}.pdf`);
+  const scrubbedPath = path.join(tmpDir, `scrubbed_san_${id}.pdf`);
+  const outPath = path.join(tmpDir, `out_san_${id}.pdf`);
+
+  fs.writeFileSync(inPath, Buffer.from(pdfBytes));
+
+  try {
+    // 1. Generate uncompressed QDF to access content stream tokens
+    execSync(`qpdf --qdf --object-streams=disable ${inPath} ${qdfPath} 2>&1`);
+    let qdf = fs.readFileSync(qdfPath, "utf-8");
+
+    for (const word of filteredWords) {
+      // Replace literal ASCII occurrences inside text streams
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const reg = new RegExp(escaped, "g");
+      const padSpaces = " ".repeat(word.length);
+      qdf = qdf.replace(reg, padSpaces);
+
+      // Handle PDF octal escapes or parenthesized text
+      const octalEscaped = word
+        .split("")
+        .map((c) => {
+          const code = c.charCodeAt(0);
+          return code < 32 || code > 126
+            ? "\\" + code.toString(8).padStart(3, "0")
+            : c === "(" || c === ")" || c === "\\"
+            ? "\\" + c
+            : c;
+        })
+        .join("");
+      if (octalEscaped !== word) {
+        const regEsc = new RegExp(octalEscaped.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+        qdf = qdf.replace(regEsc, padSpaces);
+      }
+    }
+
+    fs.writeFileSync(scrubbedPath, qdf);
+
+    // 2. Re-linearize/normalize with qpdf
+    execSync(`qpdf ${scrubbedPath} ${outPath} 2>&1`);
+    const resultBytes = fs.readFileSync(outPath);
+
+    try { fs.unlinkSync(inPath); } catch (e) {}
+    try { fs.unlinkSync(qdfPath); } catch (e) {}
+    try { fs.unlinkSync(scrubbedPath); } catch (e) {}
+    try { fs.unlinkSync(outPath); } catch (e) {}
+
+    return new Uint8Array(resultBytes);
+  } catch (err) {
+    console.error("Error in sanitizePdfContentStreams:", err);
+    try { fs.unlinkSync(inPath); } catch (e) {}
+    try { fs.unlinkSync(qdfPath); } catch (e) {}
+    try { fs.unlinkSync(scrubbedPath); } catch (e) {}
+    try { fs.unlinkSync(outPath); } catch (e) {}
+    return pdfBytes;
+  }
 }
 
 // Safe text drawing wrapper preventing any unhandled character encoding errors
@@ -519,26 +700,96 @@ async function createSampleLockedPdfBytes(password: string = "1234"): Promise<{ 
   return { bytes: new Uint8Array(encryptedBytes), pages: pagesInfo, password };
 }
 
+// Extract text blocks and exact bboxes using poppler bbox-layout
+function extractBlocksWithBbox(pdfBytes: Uint8Array): Map<number, TextBlock[]> {
+  const pageMap = new Map<number, TextBlock[]>();
+  const tmpDir = os.tmpdir();
+  const id = Math.random().toString(36).substring(2, 10);
+  const pdfPath = path.join(tmpDir, `layout_${id}.pdf`);
+
+  try {
+    fs.writeFileSync(pdfPath, Buffer.from(pdfBytes));
+    const xml = execSync(`pdftotext -bbox-layout ${pdfPath} - 2>/dev/null`, {
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const pageRegex = /<page\s+width="([^"]+)"\s+height="([^"]+)">([\s\S]*?)<\/page>/gi;
+    let pageMatch: RegExpExecArray | null;
+    let pageNum = 1;
+
+    while ((pageMatch = pageRegex.exec(xml)) !== null) {
+      const pageBody = pageMatch[3];
+      const blocks: TextBlock[] = [];
+
+      const lineRegex = /<line\s+xMin="([^"]+)"\s+yMin="([^"]+)"\s+xMax="([^"]+)"\s+yMax="([^"]+)">([\s\S]*?)<\/line>/gi;
+      let lineMatch: RegExpExecArray | null;
+      let lineIndex = 0;
+
+      while ((lineMatch = lineRegex.exec(pageBody)) !== null) {
+        const xMin = parseFloat(lineMatch[1]);
+        const yMin = parseFloat(lineMatch[2]);
+        const xMax = parseFloat(lineMatch[3]);
+        const yMax = parseFloat(lineMatch[4]);
+        const lineContent = lineMatch[5];
+
+        const words: string[] = [];
+        const wordRegex = /<word[^>]*>([^<]+)<\/word>/gi;
+        let wMatch: RegExpExecArray | null;
+        while ((wMatch = wordRegex.exec(lineContent)) !== null) {
+          words.push(wMatch[1]);
+        }
+        const text = words.join(" ").trim();
+        if (text) {
+          const fontSize = Math.max(8, Math.round((yMax - yMin) * 0.9 * 10) / 10);
+          blocks.push({
+            id: `p${pageNum}_b${lineIndex++}`,
+            text,
+            bbox: [Math.round(xMin), Math.round(yMin), Math.round(xMax), Math.round(yMax)],
+            font_name: "LiberationSans",
+            font_size: fontSize,
+            color: "#262626",
+            page: pageNum,
+            line_count: 1,
+          });
+        }
+      }
+
+      pageMap.set(pageNum, blocks);
+      pageNum++;
+    }
+  } catch (err) {
+    // Fallback if parsing fails
+  } finally {
+    try {
+      fs.unlinkSync(pdfPath);
+    } catch (e) {}
+  }
+  return pageMap;
+}
+
 // Inspect PDF bytes to extract basic text blocks and page info
 async function analyzePdfBytes(pdfBytes: Uint8Array, filename: string): Promise<{ pages: PageInfo[] }> {
   try {
     const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const count = pdfDoc.getPageCount();
+    const extractedBlocksMap = extractBlocksWithBbox(pdfBytes);
     const pagesInfo: PageInfo[] = [];
 
     for (let i = 0; i < count; i++) {
       const page = pdfDoc.getPage(i);
       const { width, height } = page.getSize();
+      const pageBlocks = extractedBlocksMap.get(i + 1) || [];
 
       pagesInfo.push({
         page_number: i + 1,
         width: Math.round(width * 10) / 10,
         height: Math.round(height * 10) / 10,
         rotation: page.getRotation().angle || 0,
-        text_blocks: [],
+        text_blocks: pageBlocks,
         image_blocks: [],
-        has_text_layer: true,
-        is_scanned: false,
+        has_text_layer: pageBlocks.length > 0,
+        is_scanned: pageBlocks.length === 0,
       });
     }
     return { pages: pagesInfo };
@@ -783,9 +1034,12 @@ async function applyOperationsToPdf(
   sessionPages: PageInfo[]
 ): Promise<{ outputBytes: Uint8Array; modifiedPages: number[]; updatedPages: PageInfo[] }> {
   const pdfDoc = await PDFDocument.load(inputPdfBytes, { ignoreEncryption: true });
-  const { regularFont, boldFont } = await getDocumentFonts(pdfDoc);
+  const fonts = await getDocumentFonts(pdfDoc);
   const modifiedPagesSet = new Set<number>();
   const pageCount = pdfDoc.getPageCount();
+
+  // Words/phrases to physically sanitize from underlying PDF content streams
+  const wordsToSanitize: string[] = [];
 
   // Clone pages info for updating
   const updatedPages: PageInfo[] = JSON.parse(JSON.stringify(sessionPages));
@@ -800,6 +1054,8 @@ async function applyOperationsToPdf(
 
     if (op.type === "replace_text") {
       if (op.old_text && op.new_text !== undefined) {
+        wordsToSanitize.push(op.old_text);
+
         // Find matching block in pageInfo
         let targetBlock = pageInfo?.text_blocks.find((b) => b.text.includes(op.old_text));
         let x = 70;
@@ -809,7 +1065,6 @@ async function applyOperationsToPdf(
         let fSize = op.font_size || 11;
 
         if (targetBlock) {
-          // Bbox is [x0, top_y0, x1, top_y1] from top
           x = targetBlock.bbox[0];
           const topY = targetBlock.bbox[1];
           w = targetBlock.bbox[2] - targetBlock.bbox[0];
@@ -818,36 +1073,44 @@ async function applyOperationsToPdf(
           fSize = op.font_size || targetBlock.font_size || 11;
         }
 
-        // Auto-fit calculation (Sprint 1 & 3):
-        // If the new text would overflow the original container width,
-        // dynamically scale down the font size down to 7pt to maintain layout fidelity.
+        // P1.1: Dynamically resolve font style & family (Sans / Serif / Mono, Regular / Bold / Italic)
+        const targetFont = resolveMatchingFont(
+          fonts,
+          op.font_name || targetBlock?.font_name,
+          op.font_weight || targetBlock?.font_weight,
+          op.font_style || targetBlock?.font_style
+        );
+
+        // Auto-fit calculation:
         let effectiveFontSize = fSize;
         if (w > 20 && op.new_text.length > 0) {
-          const measuredWidth = safeMeasureWidth(regularFont, op.new_text, fSize);
+          const measuredWidth = safeMeasureWidth(targetFont, op.new_text, fSize);
           if (measuredWidth > w * 1.05) {
             const scaleFactor = (w * 0.98) / measuredWidth;
             effectiveFontSize = Math.max(7.0, Math.round(fSize * scaleFactor * 10) / 10);
           }
         }
 
-        // 1. Draw white redaction rectangle covering old text
-        const oldTextMeasuredWidth = safeMeasureWidth(regularFont, op.old_text, fSize);
+        // P1.2: Adaptive background eraser rectangle (matches colored cells, tinted headers, or defaults cleanly)
+        const eraserRgb = resolveEraserColor(op.bg_color, targetBlock?.bg_color, targetBlock?.color);
+        const oldTextMeasuredWidth = safeMeasureWidth(targetFont, op.old_text, fSize);
         const eraseWidth = Math.max(w, oldTextMeasuredWidth);
+
         page.drawRectangle({
           x: Math.max(0, x - 2),
           y: Math.max(0, y - 2),
           width: Math.min(pW - x, eraseWidth + 6),
           height: Math.min(pH - y, h + 6),
-          color: rgb(1, 1, 1),
+          color: rgb(eraserRgb.r, eraserRgb.g, eraserRgb.b),
         });
 
-        // 2. Draw new text with auto-fitted font size & Unicode support
+        // 2. Draw new text with preserved font style & Unicode support
         const colorRgb = hexToRgb(op.color || (targetBlock ? targetBlock.color : "#262626"));
         safeDrawText(page, op.new_text, {
           x,
           y: y + 2,
           size: effectiveFontSize,
-          font: regularFont,
+          font: targetFont,
           color: rgb(colorRgb.r, colorRgb.g, colorRgb.b),
         });
 
@@ -855,7 +1118,7 @@ async function applyOperationsToPdf(
         if (targetBlock) {
           targetBlock.text = targetBlock.text.replace(op.old_text, op.new_text);
           targetBlock.font_size = effectiveFontSize;
-          const newWidth = safeMeasureWidth(regularFont, targetBlock.text, effectiveFontSize);
+          const newWidth = safeMeasureWidth(targetFont, targetBlock.text, effectiveFontSize);
           targetBlock.bbox[2] = targetBlock.bbox[0] + newWidth;
         }
 
@@ -863,6 +1126,8 @@ async function applyOperationsToPdf(
       }
     } else if (op.type === "replace_all_text") {
       if (op.old_text && op.new_text !== undefined) {
+        wordsToSanitize.push(op.old_text);
+
         for (let pIdx = 0; pIdx < pageCount; pIdx++) {
           const curPage = pdfDoc.getPage(pIdx);
           const { width: curW, height: curH } = curPage.getSize();
@@ -878,24 +1143,35 @@ async function applyOperationsToPdf(
               const y = curH - topY - h;
               const fSize = op.font_size || b.font_size || 11;
 
+              // P1.1: Match font style for each individual block
+              const blkFont = resolveMatchingFont(
+                fonts,
+                op.font_name || b.font_name,
+                op.font_weight || b.font_weight,
+                op.font_style || b.font_style
+              );
+
               // Auto-fit calculation
               let effectiveFontSize = fSize;
               if (w > 20 && op.new_text.length > 0) {
-                const measuredWidth = safeMeasureWidth(regularFont, op.new_text, fSize);
+                const measuredWidth = safeMeasureWidth(blkFont, op.new_text, fSize);
                 if (measuredWidth > w * 1.05) {
                   const scaleFactor = (w * 0.98) / measuredWidth;
                   effectiveFontSize = Math.max(7.0, Math.round(fSize * scaleFactor * 10) / 10);
                 }
               }
 
-              const oldTextMeasuredWidth = safeMeasureWidth(regularFont, op.old_text, fSize);
+              // P1.2: Adaptive eraser color
+              const eraserRgb = resolveEraserColor(op.bg_color, b.bg_color, b.color);
+              const oldTextMeasuredWidth = safeMeasureWidth(blkFont, op.old_text, fSize);
               const eraseWidth = Math.max(w, oldTextMeasuredWidth);
+
               curPage.drawRectangle({
                 x: Math.max(0, x - 2),
                 y: Math.max(0, y - 2),
                 width: Math.min(curW - x, eraseWidth + 6),
                 height: Math.min(curH - y, h + 6),
-                color: rgb(1, 1, 1),
+                color: rgb(eraserRgb.r, eraserRgb.g, eraserRgb.b),
               });
 
               const cRgb = hexToRgb(op.color || b.color || "#262626");
@@ -903,13 +1179,13 @@ async function applyOperationsToPdf(
                 x,
                 y: y + 2,
                 size: effectiveFontSize,
-                font: regularFont,
+                font: blkFont,
                 color: rgb(cRgb.r, cRgb.g, cRgb.b),
               });
 
               b.text = b.text.replace(op.old_text, op.new_text);
               b.font_size = effectiveFontSize;
-              const newWidth = safeMeasureWidth(regularFont, b.text, effectiveFontSize);
+              const newWidth = safeMeasureWidth(blkFont, b.text, effectiveFontSize);
               b.bbox[2] = b.bbox[0] + newWidth;
               modifiedPagesSet.add(pIdx + 1);
             }
@@ -923,6 +1199,7 @@ async function applyOperationsToPdf(
       let h = 20;
 
       if (op.old_text && pageInfo) {
+        wordsToSanitize.push(op.old_text);
         const b = pageInfo.text_blocks.find((blk) => blk.text.includes(op.old_text));
         if (b) {
           x = b.bbox[0];
@@ -936,8 +1213,17 @@ async function applyOperationsToPdf(
         y = pH - op.bbox[1] - (op.bbox[3] - op.bbox[1]);
         w = op.bbox[2] - op.bbox[0];
         h = op.bbox[3] - op.bbox[1];
+        if (pageInfo) {
+          const matched = pageInfo.text_blocks.filter(
+            (blk) => blk.bbox[0] >= x - 10 && blk.bbox[1] >= op.bbox[1] - 10 && blk.bbox[2] <= op.bbox[2] + 10
+          );
+          for (const mb of matched) {
+            wordsToSanitize.push(mb.text);
+          }
+        }
       }
 
+      // P1.3: Visual opaque redaction rectangle
       const c = hexToRgb(op.color || "#000000");
       page.drawRectangle({
         x: Math.max(0, x - 2),
@@ -952,10 +1238,13 @@ async function applyOperationsToPdf(
       let y = pH - 200;
       let w = 200;
       let h = 20;
+      let targetBlock: TextBlock | undefined;
 
       if (op.old_text && pageInfo) {
+        wordsToSanitize.push(op.old_text);
         const b = pageInfo.text_blocks.find((blk) => blk.text.includes(op.old_text));
         if (b) {
+          targetBlock = b;
           x = b.bbox[0];
           const topY = b.bbox[1];
           w = b.bbox[2] - b.bbox[0];
@@ -969,14 +1258,27 @@ async function applyOperationsToPdf(
         y = pH - op.bbox[1] - (op.bbox[3] - op.bbox[1]);
         w = op.bbox[2] - op.bbox[0];
         h = op.bbox[3] - op.bbox[1];
+        if (pageInfo) {
+          const matched = pageInfo.text_blocks.filter(
+            (blk) => blk.bbox[0] >= x - 10 && blk.bbox[1] >= op.bbox[1] - 10 && blk.bbox[2] <= op.bbox[2] + 10
+          );
+          for (const mb of matched) {
+            wordsToSanitize.push(mb.text);
+          }
+          pageInfo.text_blocks = pageInfo.text_blocks.filter(
+            (blk) => !(blk.bbox[0] >= x - 10 && blk.bbox[1] >= op.bbox[1] - 10 && blk.bbox[2] <= op.bbox[2] + 10)
+          );
+        }
       }
 
+      // P1.2: Adaptive eraser color
+      const eraserRgb = resolveEraserColor(op.bg_color, targetBlock?.bg_color, targetBlock?.color);
       page.drawRectangle({
         x: Math.max(0, x - 2),
         y: Math.max(0, y - 2),
         width: Math.min(pW - x, w + 6),
         height: Math.min(pH - y, h + 6),
-        color: rgb(1, 1, 1),
+        color: rgb(eraserRgb.r, eraserRgb.g, eraserRgb.b),
       });
       modifiedPagesSet.add(pageNum);
     } else if (op.type === "add_text") {
@@ -991,21 +1293,23 @@ async function applyOperationsToPdf(
         y = pH - op.bbox[1] - fSize;
       }
 
+      const textFont = resolveMatchingFont(fonts, op.font_name, op.font_weight, op.font_style);
+
       safeDrawText(page, text, {
         x,
         y,
         size: fSize,
-        font: regularFont,
+        font: textFont,
         color: rgb(c.r, c.g, c.b),
       });
 
       if (pageInfo) {
-        const textW = safeMeasureWidth(regularFont, text, fSize);
+        const textW = safeMeasureWidth(textFont, text, fSize);
         pageInfo.text_blocks.push({
           id: `custom_${generateId()}`,
           text,
           bbox: [x, pH - y - fSize, x + textW, pH - y],
-          font_name: "Helvetica",
+          font_name: op.font_name || "LiberationSans",
           font_size: fSize,
           color: op.color || "#1e3a8a",
           page: pageNum,
@@ -1042,7 +1346,7 @@ async function applyOperationsToPdf(
         x: x + 10,
         y: y + 12,
         size: 10,
-        font: boldFont,
+        font: fonts.sans.bold,
         color: rgb(1, 1, 1),
       });
 
@@ -1050,7 +1354,17 @@ async function applyOperationsToPdf(
     }
   }
 
-  const outputBytes = await pdfDoc.save();
+  let outputBytes = await pdfDoc.save();
+
+  // P1.3: Physical content stream scrubbing for true redaction and sanitization
+  if (wordsToSanitize.length > 0) {
+    try {
+      outputBytes = sanitizePdfContentStreams(outputBytes, wordsToSanitize);
+    } catch (e) {
+      console.warn("Content stream sanitization warning:", e);
+    }
+  }
+
   return {
     outputBytes,
     modifiedPages: Array.from(modifiedPagesSet).sort((a, b) => a - b),

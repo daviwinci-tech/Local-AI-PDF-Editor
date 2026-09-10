@@ -243,12 +243,16 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
     setRotation((prev) => (prev + 90) % 360);
   };
 
-  // Inline edit state and auto-fit calculation (Sprint 3)
+  // Inline edit state and auto-fit calculation (Sprint 3 & P1 enhancements)
   const [inlineEditText, setInlineEditText] = useState<string>('');
+  const [selectedFontStyle, setSelectedFontStyle] = useState<'auto' | 'normal' | 'bold' | 'italic'>('auto');
+  const [selectedBgColor, setSelectedBgColor] = useState<string>('auto');
 
   useEffect(() => {
     if (selectedElement) {
       setInlineEditText(selectedElement.text);
+      setSelectedFontStyle('auto');
+      setSelectedBgColor('auto');
     } else {
       setInlineEditText('');
     }
@@ -268,7 +272,7 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
   const handleSaveInlineEdit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!selectedElement || !inlineEditText.trim() || !onApplyDirectOperations || isApplying) return;
-    if (inlineEditText === selectedElement.text) {
+    if (inlineEditText === selectedElement.text && selectedFontStyle === 'auto' && selectedBgColor === 'auto') {
       onSelectElement(null);
       return;
     }
@@ -279,6 +283,8 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
         old_text: selectedElement.text,
         new_text: inlineEditText.trim(),
         font_size: calculatedFitSize,
+        font_style: selectedFontStyle !== 'auto' ? selectedFontStyle : undefined,
+        bg_color: selectedBgColor !== 'auto' ? selectedBgColor : undefined,
       },
     ]);
   };
@@ -304,6 +310,7 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
         page: selectedElement.page,
         old_text: selectedElement.text,
         bbox: selectedElement.bbox,
+        bg_color: selectedBgColor !== 'auto' ? selectedBgColor : undefined,
       },
     ]);
   };
@@ -584,6 +591,64 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({
                       Auto-fit: {origFontSize} pt (Vejde se)
                     </span>
                   )}
+                </div>
+
+                {/* Font Style & Background Eraser Settings */}
+                <div className="pt-1 pb-1 border-t border-zinc-800/80 space-y-1.5 text-[10px]">
+                  {/* Font Style Selector */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-medium">Styl písma:</span>
+                    <div className="flex items-center gap-1">
+                      {(['auto', 'normal', 'bold', 'italic'] as const).map((style) => (
+                        <button
+                          key={style}
+                          type="button"
+                          onClick={() => setSelectedFontStyle(style)}
+                          className={`px-1.5 py-0.5 rounded border transition cursor-pointer ${
+                            selectedFontStyle === style
+                              ? 'bg-indigo-600 border-indigo-400 text-white font-semibold'
+                              : 'bg-zinc-800/80 border-zinc-700/60 text-zinc-300 hover:bg-zinc-700'
+                          }`}
+                        >
+                          {style === 'auto' ? 'Auto' : style === 'normal' ? 'Sans' : style === 'bold' ? 'Bold' : 'Italic'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Eraser Background Selector */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-400 font-medium">Podklad:</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBgColor('auto')}
+                        className={`px-1.5 py-0.5 rounded border transition cursor-pointer text-[9px] ${
+                          selectedBgColor === 'auto'
+                            ? 'bg-indigo-600 border-indigo-400 text-white font-medium'
+                            : 'bg-zinc-800 border-zinc-700 text-zinc-400'
+                        }`}
+                      >
+                        Auto-detekce
+                      </button>
+                      {[
+                        { label: 'Bílá', color: '#ffffff' },
+                        { label: 'Šedá', color: '#f3f4f6' },
+                        { label: 'Tmavá', color: '#1e293b' },
+                      ].map((bg) => (
+                        <button
+                          key={bg.color}
+                          type="button"
+                          title={bg.label}
+                          onClick={() => setSelectedBgColor(bg.color)}
+                          className={`w-4 h-4 rounded-full border transition cursor-pointer ${
+                            selectedBgColor === bg.color ? 'ring-2 ring-indigo-400 ring-offset-1 ring-offset-zinc-900 border-white' : 'border-zinc-600'
+                          }`}
+                          style={{ backgroundColor: bg.color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Primary Action Buttons */}
